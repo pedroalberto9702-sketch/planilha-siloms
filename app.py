@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
- GERADOR DE PLANILHA SILOMS - versao WEB
+ GERADOR TOP COMPRASNET - versao WEB
 =============================================================================
  Sobe um site local com o formulario (UASG, tipo, processo) e devolve o
  arquivo .xlsx pronto para download.
@@ -73,7 +73,7 @@ PAGINA = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gerador de Planilha SILOMS</title>
+<title>Gerador TOP Comprasnet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -220,12 +220,6 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
   background:var(--papel);padding:1px 5px;border-radius:2px;
 }
 
-.rodape{
-  max-width:720px;margin:18px auto 0;
-  font-size:12px;color:var(--tinta-fraca);text-align:center;line-height:1.7;
-}
-.rodape a{color:var(--azul)}
-
 /* -------- barra de progresso -------- */
 .progresso{display:none;padding:0 28px 26px}
 .progresso.ativa{display:block}
@@ -255,8 +249,8 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
 
 <div class="folha">
   <div class="tarja">
-    <div class="orgao">Base Aérea de Porto Velho &middot; Seção de Licitações e Contratos</div>
-    <h1>Gerador de Planilha SILOMS</h1>
+    <div class="orgao">Base Aérea de Porto Velho &middot; Seção de Licitações e Contratos 2026</div>
+    <h1>Gerador TOP Comprasnet</h1>
     <div class="sub">Resultado de licitação extraído do Compras.gov.br</div>
   </div>
 
@@ -283,7 +277,7 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
       <label for="processo">Nº do processo</label>
       <input type="text" id="processo" name="processo" placeholder="90009/2026">
       <div class="msg-erro" id="erro-processo"></div>
-      <div class="dica">Informe com o ano. Aceita 90009/2026 ou 900092026.</div>
+      <div class="dica">Informe com o ano, no formato 90009/2026.</div>
     </div>
 
     <button type="submit" id="btn">Gerar planilha</button>
@@ -309,12 +303,6 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
     <div id="falha-extra"></div>
   </div>
 </div>
-
-<p class="rodape">
-  Dados obtidos da API pública
-  <a href="https://dadosabertos.compras.gov.br" target="_blank" rel="noopener">Compras Públicas em Dados Abertos</a>.<br>
-  Confira o resultado no portal antes de importar no SILOMS.
-</p>
 
 <script>
 const form = document.getElementById('form');
@@ -373,6 +361,27 @@ form.addEventListener('submit', async (ev)=>{
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({uasg, processo, tipo: document.getElementById('tipo').value})
     });
+
+    if(!r.ok){
+      paraEtapas();
+      let titulo = 'O servidor não respondeu';
+      let texto  = 'Tente de novo em alguns instantes.';
+      if(r.status === 502 || r.status === 503){
+        titulo = 'O servidor está acordando';
+        texto  = 'Este site hiberna quando fica parado. Espere cerca de um '
+               + 'minuto e clique em Gerar planilha de novo.';
+      }else if(r.status === 504){
+        titulo = 'A consulta demorou demais';
+        texto  = 'O Compras.gov.br está lento agora. Tente novamente em '
+               + 'alguns minutos.';
+      }
+      document.getElementById('falha-titulo').textContent = titulo;
+      document.getElementById('falha-texto').textContent = texto;
+      document.getElementById('falha-extra').innerHTML = '';
+      falha.classList.add('ativa');
+      return;
+    }
+
     const d = await r.json();
     paraEtapas();
 
@@ -404,9 +413,10 @@ form.addEventListener('submit', async (ev)=>{
 
   }catch(err){
     paraEtapas();
-    document.getElementById('falha-titulo').textContent = 'Falha na comunicação';
+    document.getElementById('falha-titulo').textContent = 'Não consegui completar a consulta';
     document.getElementById('falha-texto').textContent =
-      'Não consegui falar com o servidor local. Verifique se a janela preta do programa continua aberta.';
+      'A conexão caiu no meio do caminho. Verifique sua internet e clique '
+      + 'em Gerar planilha de novo.';
     document.getElementById('falha-extra').innerHTML = '';
     falha.classList.add('ativa');
   }finally{
@@ -572,7 +582,7 @@ def main():
 
     if local:
         print("=" * 66)
-        print(" GERADOR DE PLANILHA SILOMS - servidor local")
+        print(" GERADOR TOP COMPRASNET - servidor local")
         print("=" * 66)
         print(f"\n  Abra no navegador:  http://127.0.0.1:{porta}")
         print("\n  Para outros computadores da rede usarem, veja o IP com")
