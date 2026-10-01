@@ -24,6 +24,8 @@ import time
 import re
 import sys
 import uuid
+
+import pandas as pd
 import tempfile
 import threading
 import webbrowser
@@ -51,7 +53,13 @@ try:
 except ImportError:
     pgc_core = None
 
+try:
+    import orcamento_core
+except ImportError:
+    orcamento_core = None
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 24 * 1024 * 1024
 
 PASTA_SAIDA = os.path.join(tempfile.gettempdir(), "siloms_planilhas")
 os.makedirs(PASTA_SAIDA, exist_ok=True)
@@ -91,6 +99,7 @@ PAGINA = r"""<!DOCTYPE html>
   --azul:#1E5AA8;
   --azul-escuro:#153F75;
   --verde:#1B6E52;
+  --verde-dado:#108A5E;
   --vermelho:#A8321F;
   --linha:#C8D2DD;
   --sombra:0 1px 2px rgba(11,31,51,.06),0 8px 24px rgba(11,31,51,.08);
@@ -106,7 +115,7 @@ body{
   -webkit-font-smoothing:antialiased;
 }
 .folha{
-  max-width:720px;margin:0 auto;
+  max-width:720px;margin:0 auto;transition:max-width .18s ease;
   background:var(--campo);
   border:1px solid var(--linha);
   border-radius:3px;
@@ -132,12 +141,15 @@ body{
   margin-top:6px;font-size:13px;color:#A9BDD0;
 }
 
+.folha.larga{max-width:1020px}
+
 /* -------- abas -------- */
 .abas{
   display:flex;border-bottom:1px solid var(--linha);background:#F7F9FB;
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
 }
 .aba{
-  flex:1;padding:14px 10px;border:none;background:none;cursor:pointer;
+  flex:1 0 auto;padding:14px 16px;white-space:nowrap;border:none;background:none;cursor:pointer;
   font-family:"IBM Plex Sans",sans-serif;font-size:13.5px;font-weight:600;
   color:var(--tinta-fraca);border-bottom:3px solid transparent;
   transition:color .15s,border-color .15s;width:auto;border-radius:0;
@@ -241,6 +253,75 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
   background:var(--papel);padding:1px 5px;border-radius:2px;
 }
 
+/* -------- upload -------- */
+.solta{
+  border:2px dashed var(--linha);border-radius:3px;
+  padding:26px 18px;text-align:center;cursor:pointer;
+  transition:border-color .15s,background .15s;background:#FAFBFC;
+}
+.solta:hover,.solta.sobre{border-color:var(--azul);background:#F2F6FB}
+.solta .titulo{
+  font-family:"IBM Plex Sans",sans-serif;font-weight:600;font-size:15px;
+  letter-spacing:0;text-transform:none;color:var(--tinta);margin-bottom:5px;
+}
+.solta .ajuda{
+  font-family:"IBM Plex Sans",sans-serif;font-size:13px;font-weight:400;
+  letter-spacing:0;text-transform:none;color:var(--tinta-fraca);
+}
+.solta input{display:none}
+.arquivo{
+  margin-top:12px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;
+  letter-spacing:0;text-transform:none;color:var(--verde);
+}
+
+/* -------- numeros de destaque -------- */
+.placas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:22px 0 6px}
+.placa{border:1px solid var(--linha);border-radius:3px;padding:13px 14px;background:#FAFBFC}
+.placa .rot{
+  font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--tinta-fraca);margin-bottom:6px;
+}
+.placa .num{font-size:19px;font-weight:600;letter-spacing:-.02em;line-height:1.2}
+.placa.destaque{background:#F0F7F4;border-color:#BFE0D2}
+.placa.destaque .num{color:var(--verde-dado)}
+.placa .pe{font-size:11.5px;color:var(--tinta-fraca);margin-top:3px}
+
+/* -------- tabelas -------- */
+.bloco{margin-top:26px}
+.bloco h3{
+  font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--tinta-fraca);font-weight:500;
+  margin:0 0 10px;
+}
+.rolagem{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.dados{border-collapse:collapse;width:100%;font-size:13px}
+table.dados th{
+  text-align:left;font-weight:600;font-size:11px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--tinta-fraca);
+  border-bottom:1px solid var(--linha);padding:7px 9px;white-space:nowrap;
+}
+table.dados td{border-bottom:1px solid #EEF1F5;padding:7px 9px;vertical-align:middle}
+table.dados td.n{
+  text-align:right;font-family:"IBM Plex Mono",monospace;
+  font-size:12.5px;white-space:nowrap;
+}
+table.dados tr:hover td{background:#F7F9FB}
+table.dados .fraco{color:var(--tinta-fraca)}
+table.dados td.corta{
+  max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+table.dados td.corta.estreito{max-width:210px}
+table.dados.densa th,table.dados.densa td{padding:7px 7px}
+
+/* barra de proporcao: liquidado x a liquidar */
+.prop{display:flex;gap:2px;height:8px;min-width:90px;border-radius:2px;overflow:hidden}
+.prop i{display:block;height:100%}
+.prop .liq{background:var(--verde-dado)}
+.prop .alq{background:var(--azul)}
+.legenda{display:flex;gap:16px;font-size:12px;color:var(--tinta-fraca);margin-bottom:10px}
+.legenda span{display:flex;align-items:center;gap:6px}
+.legenda i{width:10px;height:10px;border-radius:2px;display:block}
+
 /* -------- barra de progresso -------- */
 .progresso{display:none;padding:0 28px 26px}
 .progresso.ativa{display:block}
@@ -260,8 +341,9 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
   .etapa.rodando .bolinha{animation:none}
 }
 @media (max-width:600px){
+  .placas{grid-template-columns:1fr}
   body{padding:16px 12px 40px}
-  form,.saida,.falha,.progresso{padding-left:18px;padding-right:18px}
+  form,.saida,.falha,.progresso,.orc{padding-left:18px;padding-right:18px}
   .tarja{padding:18px}
 }
 </style>
@@ -272,12 +354,14 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
   <div class="tarja">
     <div class="orgao">Base Aérea de Porto Velho &middot; Seção de Licitações e Contratos 2026</div>
     <h1>Gerador TOP Comprasnet</h1>
-    <div class="sub">Resultado de licitação extraído do Compras.gov.br</div>
+    <div class="sub">Licitações, plano de contratações e execução orçamentária</div>
   </div>
 
   <div class="abas">
-    <button class="aba ativa" id="aba-lic" onclick="trocaAba('lic')">Resultado de licitação</button>
+    <button class="aba ativa" id="aba-lic" onclick="trocaAba('lic')">Licitação</button>
     <button class="aba" id="aba-pgc" onclick="trocaAba('pgc')">Plano de contratações</button>
+    <button class="aba" id="aba-cre" onclick="trocaAba('cre')">Crédito</button>
+    <button class="aba" id="aba-emp" onclick="trocaAba('emp')">Empenhos</button>
   </div>
 
   <div class="painel ativo" id="painel-lic">
@@ -329,6 +413,26 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
 
       <button type="submit" id="btn-pgc">Gerar planilha</button>
     </form>
+  </div>
+
+  <div class="painel orc" id="painel-cre" style="padding:28px">
+    <label class="solta" id="solta-cre">
+      <div class="titulo">Enviar o extrato de Crédito Disponível</div>
+      <div class="ajuda">Arquivo .xlsx do Tesouro Gerencial. Clique ou arraste aqui.</div>
+      <div class="arquivo" id="nome-cre"></div>
+      <input type="file" id="arq-cre" accept=".xlsx,.xls">
+    </label>
+    <div id="res-cre"></div>
+  </div>
+
+  <div class="painel orc" id="painel-emp" style="padding:28px">
+    <label class="solta" id="solta-emp">
+      <div class="titulo">Enviar o extrato de Empenhos</div>
+      <div class="ajuda">Arquivo .xlsx do Tesouro Gerencial. Clique ou arraste aqui.</div>
+      <div class="arquivo" id="nome-emp"></div>
+      <input type="file" id="arq-emp" accept=".xlsx,.xls">
+    </label>
+    <div id="res-emp"></div>
   </div>
 
   <div class="progresso" id="progresso"></div>
@@ -393,15 +497,93 @@ function paraEtapas(){
   progresso.classList.remove('ativa');
 }
 
+const ABAS = ['lic','pgc','cre','emp'];
 function trocaAba(qual){
-  const outro = qual === 'lic' ? 'pgc' : 'lic';
-  document.getElementById('aba-'+qual).classList.add('ativa');
-  document.getElementById('aba-'+outro).classList.remove('ativa');
-  document.getElementById('painel-'+qual).classList.add('ativo');
-  document.getElementById('painel-'+outro).classList.remove('ativo');
+  document.querySelector('.folha').classList.toggle('larga',
+      qual==='cre' || qual==='emp');
+  ABAS.forEach(a=>{
+    document.getElementById('aba-'+a).classList.toggle('ativa', a===qual);
+    document.getElementById('painel-'+a).classList.toggle('ativo', a===qual);
+  });
   saida.classList.remove('ativa');
   falha.classList.remove('ativa');
   paraEtapas();
+}
+
+// ---- utilidades de formatacao ----
+const brl = n => (n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc = t => String(t==null?'':t).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function placa(rot, num, pe, destaque){
+  return `<div class="placa${destaque?' destaque':''}">
+    <div class="rot">${esc(rot)}</div>
+    <div class="num">R$ ${brl(num)}</div>
+    ${pe?`<div class="pe">${esc(pe)}</div>`:''}</div>`;
+}
+
+function tabela(titulo, colunas, linhas, legenda, classe){
+  return `<div class="bloco"><h3>${esc(titulo)}</h3>
+    ${legenda||''}
+    <div class="rolagem"><table class="dados">
+      <thead><tr>${colunas.map(c=>`<th${c.n?' style="text-align:right"':''}>${esc(c.t)}</th>`).join('')}</tr></thead>
+      <tbody>${linhas.join('')}</tbody>
+    </table></div></div>`;
+}
+
+const LEGENDA_LIQ = `<div class="legenda">
+  <span><i style="background:var(--verde-dado)"></i>Liquidado</span>
+  <span><i style="background:var(--azul)"></i>A liquidar</span></div>`;
+
+function barraProp(liq, alq){
+  const t = (liq||0)+(alq||0);
+  if(t<=0) return '<span class="fraco">—</span>';
+  const p = Math.round(liq/t*100);
+  return `<div class="prop" title="${p}% liquidado">
+    <i class="liq" style="width:${p}%"></i><i class="alq" style="width:${100-p}%"></i></div>`;
+}
+
+// ---- envio de planilha ----
+function ligarUpload(tipo, rota, render){
+  const campo = document.getElementById('arq-'+tipo);
+  const area  = document.getElementById('solta-'+tipo);
+  const nome  = document.getElementById('nome-'+tipo);
+  const res   = document.getElementById('res-'+tipo);
+
+  ['dragenter','dragover'].forEach(ev=>area.addEventListener(ev, e=>{
+    e.preventDefault(); area.classList.add('sobre');}));
+  ['dragleave','drop'].forEach(ev=>area.addEventListener(ev, e=>{
+    e.preventDefault(); area.classList.remove('sobre');}));
+  area.addEventListener('drop', e=>{
+    if(e.dataTransfer.files.length){ campo.files = e.dataTransfer.files; enviar(); }});
+  campo.addEventListener('change', enviar);
+
+  async function enviar(){
+    const f = campo.files[0];
+    if(!f) return;
+    nome.textContent = 'Lendo ' + f.name + '...';
+    res.innerHTML = '';
+    const fd = new FormData(); fd.append('arquivo', f);
+    try{
+      const r = await fetch(rota, {method:'POST', body:fd});
+      if(!r.ok){
+        nome.textContent = '';
+        res.innerHTML = `<div class="aviso">O servidor recusou o arquivo (erro ${r.status}). Se ele for muito grande, exporte um período menor.</div>`;
+        return;
+      }
+      const d = await r.json();
+      if(!d.ok){
+        nome.textContent = '';
+        res.innerHTML = `<div class="aviso"><strong>${esc(d.titulo||'Não consegui ler')}</strong><br>${esc(d.mensagem||'')}</div>`;
+        return;
+      }
+      nome.textContent = f.name + ' — lido com sucesso';
+      res.innerHTML = render(d);
+    }catch(err){
+      nome.textContent = '';
+      res.innerHTML = '<div class="aviso">A conexão caiu durante o envio. Tente de novo.</div>';
+    }
+  }
 }
 
 function mostraFalha(titulo, texto, extra){
@@ -536,6 +718,81 @@ form_pgc.addEventListener('submit', async (ev)=>{
     btnPgc.disabled = false;
     btnPgc.textContent = 'Gerar planilha';
   }
+});
+
+// ================= CREDITO =================
+ligarUpload('cre', '/upload-credito', d => {
+  const r = d.resumo;
+  let h = `<div class="placas">
+    ${placa('Crédito recebido', r.recebido)}
+    ${placa('Empenhado', r.empenhadas)}
+    ${placa('Disponível', r.disponivel, null, true)}
+  </div>
+  <div class="pe" style="font-size:12px;color:var(--tinta-fraca);margin-top:4px">
+    ${r.linhas} registros em ${r.ugs} unidade(s) gestora(s)</div>`;
+
+  h += tabela('Por unidade gestora',
+    [{t:'UG'},{t:'Código'},{t:'Recebido',n:1},{t:'Empenhado',n:1},{t:'Disponível',n:1}],
+    r.por_ug.map(u=>`<tr>
+      <td>${esc(u.ug_nome)}</td><td class="fraco">${esc(u.ug_codigo)}</td>
+      <td class="n">${brl(u.recebido)}</td><td class="n">${brl(u.empenhadas)}</td>
+      <td class="n"><strong>${brl(u.disponivel)}</strong></td></tr>`));
+
+  h += tabela('Por natureza de despesa',
+    [{t:'ND'},{t:'Recebido',n:1},{t:'Empenhado',n:1},{t:'Disponível',n:1}],
+    r.por_nd.map(n=>`<tr>
+      <td>${esc(n.nd)}</td>
+      <td class="n">${brl(n.recebido)}</td><td class="n">${brl(n.empenhadas)}</td>
+      <td class="n"><strong>${brl(n.disponivel)}</strong></td></tr>`));
+
+  if(r.por_acao.length) h += tabela('Por ação de governo',
+    [{t:'Ação'},{t:'Recebido',n:1},{t:'Empenhado',n:1},{t:'Disponível',n:1}],
+    r.por_acao.map(a=>`<tr>
+      <td>${esc(a.acao)}</td>
+      <td class="n">${brl(a.recebido)}</td><td class="n">${brl(a.empenhadas)}</td>
+      <td class="n">${brl(a.disponivel)}</td></tr>`));
+  return h;
+});
+
+// ================= EMPENHOS =================
+ligarUpload('emp', '/upload-empenhos', d => {
+  const r = d.resumo;
+  let h = `<div class="placas">
+    ${placa('Empenhado', r.empenhado, r.nes + ' notas')}
+    ${placa('A liquidar', r.a_liquidar)}
+    ${placa('Liquidado', r.liquidado)}
+  </div>`;
+
+  h += tabela('Vínculo com contrato',
+    [{t:'Grupo'},{t:'Notas',n:1},{t:'Empenhado',n:1}],
+    [`<tr><td>Fornecedor com CNPJ <span class="fraco">— pode ter contrato</span></td>
+        <td class="n">${r.nes_fornecedores}</td><td class="n">${brl(r.valor_fornecedores)}</td></tr>`,
+     `<tr><td>Própria UG ou CPF <span class="fraco">— folha, auxílios, diárias</span></td>
+        <td class="n">${r.nes_proprios}</td><td class="n">${brl(r.valor_proprios)}</td></tr>`]);
+
+  h += tabela('Por natureza de despesa',
+    [{t:'ND'},{t:'Descrição'},{t:'Notas',n:1},{t:'Empenhado',n:1},
+     {t:'A liquidar',n:1},{t:'Liquidado',n:1},{t:'Execução'}],
+    r.por_nd.map(n=>`<tr>
+      <td>${esc(n.nd)}</td><td class="fraco corta estreito" title="${esc(n.nome||'')}">${esc(n.nome||'')}</td>
+      <td class="n">${n.nes}</td><td class="n">${brl(n.empenhado)}</td>
+      <td class="n">${brl(n.a_liquidar)}</td><td class="n">${brl(n.liquidado)}</td>
+      <td style="width:96px">${barraProp(n.liquidado, n.a_liquidar)}</td></tr>`),
+    LEGENDA_LIQ, ' densa');
+
+  h += tabela('Por modalidade',
+    [{t:'Modalidade'},{t:'Notas',n:1},{t:'Empenhado',n:1},{t:'A liquidar',n:1}],
+    r.por_modalidade.map(m=>`<tr>
+      <td>${esc(m.modalidade||'—')}</td><td class="n">${m.nes}</td>
+      <td class="n">${brl(m.empenhado)}</td><td class="n">${brl(m.a_liquidar)}</td></tr>`));
+
+  h += tabela(`Maiores fornecedores (${r.fornecedores} no total)`,
+    [{t:'CNPJ'},{t:'Fornecedor'},{t:'Notas',n:1},{t:'Empenhado',n:1},{t:'A liquidar',n:1}],
+    r.por_fornecedor.map(f=>`<tr>
+      <td class="fraco" style="font-family:'IBM Plex Mono',monospace;font-size:12px">${esc(f.favorecido_ni)}</td>
+      <td class="corta" title="${esc(f.nome||'')}">${esc(f.nome||'')}</td><td class="n">${f.nes}</td>
+      <td class="n">${brl(f.empenhado)}</td><td class="n">${brl(f.a_liquidar)}</td></tr>`));
+  return h;
 });
 </script>
 </body>
@@ -808,6 +1065,56 @@ def gerar_pgc():
         ok=True, token=token, uasg=uasg, nome_uasg=nome_uasg or "",
         ano=ano, dfds=int(len(df)), itens=n_itens, valor=total, aviso=aviso,
     )
+
+
+def _ler_enviado(leitor, rotulo):
+    """Recebe o arquivo do formulário, passa pelo leitor e devolve o resumo."""
+    if orcamento_core is None:
+        return jsonify(ok=False, titulo="Módulo indisponível",
+                       mensagem="O arquivo orcamento_core.py não está no servidor.")
+
+    arq = request.files.get("arquivo")
+    if arq is None or not arq.filename:
+        return jsonify(ok=False, titulo="Nenhum arquivo",
+                       mensagem="Escolha a planilha antes de enviar.")
+
+    if not arq.filename.lower().endswith((".xlsx", ".xls")):
+        return jsonify(ok=False, titulo="Formato não aceito",
+                       mensagem="Envie o arquivo .xlsx exportado do Tesouro Gerencial.")
+
+    try:
+        dados = io.BytesIO(arq.read())
+        df = leitor(dados)
+    except ValueError as e:
+        return jsonify(
+            ok=False, titulo=f"Não reconheci o extrato de {rotulo}",
+            mensagem=f"{e}. Confira se é mesmo a planilha de {rotulo} e se ela "
+                     "veio inteira do Tesouro Gerencial.",
+        )
+    except Exception as e:
+        return jsonify(ok=False, titulo="Não consegui ler a planilha",
+                       mensagem=f"{type(e).__name__}: {e}")
+
+    if df.empty:
+        return jsonify(ok=False, titulo="Planilha sem dados",
+                       mensagem="O arquivo foi lido, mas não tem nenhuma linha.")
+    return df
+
+
+@app.route("/upload-credito", methods=["POST"])
+def upload_credito():
+    r = _ler_enviado(orcamento_core.ler_credito, "Crédito Disponível")
+    if not isinstance(r, pd.DataFrame):
+        return r
+    return jsonify(ok=True, resumo=orcamento_core.resumo_credito(r))
+
+
+@app.route("/upload-empenhos", methods=["POST"])
+def upload_empenhos():
+    r = _ler_enviado(orcamento_core.ler_empenhos, "Empenhos")
+    if not isinstance(r, pd.DataFrame):
+        return r
+    return jsonify(ok=True, resumo=orcamento_core.resumo_empenhos(r))
 
 
 @app.route("/baixar/<token>")
