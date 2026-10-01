@@ -4,7 +4,11 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 1
+    # O comando abaixo so vale para servicos criados por Blueprint.
+    # Um servico criado pelo painel usa o comando guardado la -- por isso a
+    # configuracao de verdade do gunicorn esta em gunicorn.conf.py, que o
+    # gunicorn le sozinho em qualquer um dos dois casos.
+    startCommand: gunicorn app:app
     envVars:
       - key: RENDER
         value: "true"

@@ -68,14 +68,15 @@ DEBUG = False                   # True imprime as URLs chamadas (para diagnostic
 # CONSTANTES
 # =============================================================================
 
-VERSAO = "2026-10-01c"      # aparece no rodape do site e em /versao
+VERSAO = "2026-10-01d"      # aparece no rodape do site e em /versao
 BASE = "https://dadosabertos.compras.gov.br"
 TAMANHO_PAGINA = 200
 JANELA_DIAS = 365
 PAUSA = 0.15                # pausa entre paginas
 TIMEOUT_REQ = 30            # intervalo maximo sem receber bytes
 LIMITE_RESPOSTA = 40_000_000   # teto de uma resposta, em bytes
-TEMPO_LIMITE = 180          # limite da consulta inteira (o servidor corta em 300)
+TEMPO_LIMITE = 150          # limite da consulta inteira
+                            # (o gunicorn corta em 300; ver gunicorn.conf.py)
 JANELA_ITENS = 45           # dias antes/depois da publicacao para buscar itens
 
 MODALIDADES = {
