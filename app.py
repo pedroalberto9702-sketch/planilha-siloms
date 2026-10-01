@@ -621,19 +621,29 @@ def gerar():
     saida_log = io.StringIO()
     original = core.log
     core.log = lambda m: saida_log.write(str(m) + "\n")
+    core.iniciar_prazo()
     try:
         compra, itens, resultados = core.buscar_dados(
             uasg, numero, ano, core.MODALIDADES[tipo]
         )
+    except core.TempoEsgotado:
+        return jsonify(
+            ok=False, titulo="A consulta demorou demais",
+            mensagem="O Compras.gov.br não respondeu a tempo. Isso costuma ser "
+                     "lentidão momentânea do portal.",
+            extra="<ul><li>Tente de novo em alguns minutos.</li>"
+                  "<li>Se insistir, confira se o tipo de licitação está "
+                  "correto — buscar na modalidade errada varre muito mais "
+                  "dados sem necessidade.</li></ul>",
+        )
     except Exception as e:
-        core.log = original
         return jsonify(
             ok=False, titulo="Não consegui consultar o Compras.gov.br",
-            mensagem=f"A consulta falhou: {type(e).__name__}. "
-                     "Verifique sua conexão e tente de novo em alguns instantes.",
+            mensagem=f"A consulta falhou: {type(e).__name__}: {e}",
         )
     finally:
         core.log = original
+        core.limpar_prazo()
 
     if compra is None:
         texto = saida_log.getvalue()
@@ -742,14 +752,22 @@ def gerar_pgc():
             mensagem=f"Não encontrei a UASG {uasg} no Compras.gov.br.",
         )
 
+    core.iniciar_prazo()
     try:
         registros = pgc_core.buscar_pgc(uasg, ano, cnpj)
+    except core.TempoEsgotado:
+        return jsonify(
+            ok=False, titulo="A consulta demorou demais",
+            mensagem="O Compras.gov.br não respondeu a tempo. Tente de novo "
+                     "em alguns minutos.",
+        )
     except Exception as e:
         return jsonify(
             ok=False, titulo="Não consegui consultar o plano",
-            mensagem=f"A consulta falhou: {type(e).__name__}. "
-                     "Verifique sua conexão e tente de novo.",
+            mensagem=f"A consulta falhou: {type(e).__name__}: {e}",
         )
+    finally:
+        core.limpar_prazo()
 
     if not registros:
         return jsonify(

@@ -26,7 +26,7 @@
 import re
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import requests
 import pandas as pd
@@ -69,7 +69,10 @@ DEBUG = False                   # True imprime as URLs chamadas (para diagnostic
 BASE = "https://dadosabertos.compras.gov.br"
 TAMANHO_PAGINA = 500
 JANELA_DIAS = 365
-PAUSA = 0.35
+PAUSA = 0.15                # pausa entre paginas
+TIMEOUT_REQ = 45            # limite de cada requisicao
+TEMPO_LIMITE = 180          # limite da consulta inteira (o servidor corta em 300)
+JANELA_ITENS = 45           # dias antes/depois da publicacao para buscar itens
 
 MODALIDADES = {
     "PREGAO": 5,
@@ -107,6 +110,20 @@ def dbg(msg):
 # ACESSO A API
 # =============================================================================
 
+def _data_de(valor):
+    """Le uma data da API ('2026-03-10T00:00:00Z' ou '2026-03-10') como date."""
+    if not valor:
+        return None
+    txt = str(valor).strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(txt).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(txt[:10])
+        except ValueError:
+            return None
+
+
 def janelas_de_data(inicio, fim, dias=JANELA_DIAS):
     d0, d1 = date.fromisoformat(inicio), date.fromisoformat(fim)
     atual = d0
@@ -116,13 +133,51 @@ def janelas_de_data(inicio, fim, dias=JANELA_DIAS):
         atual = prox + timedelta(days=1)
 
 
-def consultar(endpoint, params, obrigatorio=True):
-    """Consulta paginada. Devolve a lista completa de registros."""
+class TempoEsgotado(Exception):
+    """A consulta inteira passou do prazo; abortamos para responder a tempo."""
+
+
+_inicio_consulta = None
+_limite_consulta = TEMPO_LIMITE
+
+
+def iniciar_prazo(segundos=None):
+    """Marca o inicio da consulta. Sem isso nao ha limite de tempo."""
+    global _inicio_consulta, _limite_consulta
+    _inicio_consulta = time.monotonic()
+    _limite_consulta = segundos or TEMPO_LIMITE
+
+
+def limpar_prazo():
+    global _inicio_consulta
+    _inicio_consulta = None
+
+
+def _checar_prazo():
+    if _inicio_consulta is None:
+        return
+    gasto = time.monotonic() - _inicio_consulta
+    if gasto > _limite_consulta:
+        raise TempoEsgotado(
+            f"a consulta passou de {int(_limite_consulta)} segundos"
+        )
+
+
+def consultar(endpoint, params, obrigatorio=True, filtro=None):
+    """
+    Consulta paginada.
+
+    'filtro' e aplicado pagina a pagina, antes de acumular. Isso importa:
+    os endpoints de itens e de resultado nao aceitam filtrar por licitacao,
+    so por UASG e data. Sem filtrar na hora, guardariamos na memoria milhares
+    de registros de outras compras para descartar no fim.
+    """
     registros, pagina = [], 1
     while True:
+        _checar_prazo()
         p = dict(params, pagina=pagina, tamanhoPagina=TAMANHO_PAGINA)
         try:
-            r = SESSAO.get(f"{BASE}/{endpoint}", params=p, timeout=90)
+            r = SESSAO.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT_REQ)
         except requests.RequestException as e:
             if obrigatorio:
                 raise
@@ -141,7 +196,7 @@ def consultar(endpoint, params, obrigatorio=True):
 
         dados = r.json()
         lote = dados.get("resultado") or []
-        registros.extend(lote)
+        registros.extend(lote if filtro is None else [x for x in lote if filtro(x)])
 
         restantes = dados.get("paginasRestantes", 0) or 0
         total_pag = dados.get("totalPaginas", 1) or 1
@@ -282,37 +337,65 @@ def buscar_dados(uasg, numero, ano, cod_modalidade):
     log(f"        objeto..: {str(compra.get('objetoCompra') or '')[:80]}")
     log(f"        idCompra: {id_compra}")
 
+    # ---- janela de datas ----------------------------------------------------
+    # Os endpoints de itens e resultado nao filtram por licitacao, so por UASG
+    # e data. Varrer o ano inteiro sao dezenas de requisicoes e estoura o
+    # tempo do servidor. Como os itens entram no PNCP junto com a compra,
+    # buscamos so em volta da data dela.
+    ref = _data_de(compra.get("dataPublicacaoPncp")
+                   or compra.get("dataInclusaoPncp")) or date(ano, 1, 1)
+    hoje = date.today()
+
+    ini_itens = max(date(ano, 1, 1), ref - timedelta(days=JANELA_ITENS))
+    fim_itens = min(hoje, ref + timedelta(days=JANELA_ITENS))
+    if fim_itens < ini_itens:
+        fim_itens = ini_itens
+
+    so_desta_compra = lambda x: x.get("idCompra") == id_compra
+
     # ---- 2. Itens da contratacao --------------------------------------------
     log("\n[2/3] Itens da contratacao...")
-    itens = []
-    for d0, d1 in janelas_de_data(f"{ano}-01-01", f"{ano}-12-31"):
+    log(f"    janela: {ini_itens} a {fim_itens}")
+
+    def _buscar_itens(d0, d1):
         base = {
             "unidadeOrgaoCodigoUnidade": uasg,
-            "dataInclusaoPncpInicial": d0,
-            "dataInclusaoPncpFinal": d1,
+            "dataInclusaoPncpInicial": d0.isoformat(),
+            "dataInclusaoPncpFinal": d1.isoformat(),
         }
         lote = consultar(
             "modulo-contratacoes/2_consultarItensContratacoes_PNCP_14133",
-            base, obrigatorio=False,
+            base, obrigatorio=False, filtro=so_desta_compra,
         )
-        if not lote:
-            # a doc marca materialOuServico como obrigatorio; tentamos os dois
-            for tipo in ("M", "S"):
-                lote += consultar(
-                    "modulo-contratacoes/2_consultarItensContratacoes_PNCP_14133",
-                    {**base, "materialOuServico": tipo}, obrigatorio=False,
-                )
-        itens += lote
+        if lote:
+            return lote
+        # a doc marca materialOuServico como obrigatorio; tentamos os dois
+        for tipo in ("M", "S"):
+            lote += consultar(
+                "modulo-contratacoes/2_consultarItensContratacoes_PNCP_14133",
+                {**base, "materialOuServico": tipo},
+                obrigatorio=False, filtro=so_desta_compra,
+            )
+        return lote
 
-    itens = [i for i in itens if i.get("idCompra") == id_compra]
+    itens = _buscar_itens(ini_itens, fim_itens)
+
+    # se a janela estreita nao achou nada, alarga uma vez para o ano inteiro
+    if not itens:
+        log("    nada na janela; ampliando para o ano todo")
+        itens = _buscar_itens(date(ano, 1, 1), min(hoje, date(ano, 12, 31)))
+
     log(f"    {len(itens)} item(ns) da compra")
 
     # ---- 3. Resultados (vencedores) -----------------------------------------
+    # O resultado sai depois da publicacao, entao a janela vai da compra ate hoje.
     log("\n[3/3] Resultados dos itens...")
+    ini_res = max(date(ano, 1, 1), ref - timedelta(days=15))
+    fim_res = max(hoje, ini_res)
+    log(f"    janela: {ini_res} a {fim_res}")
+
     resultados = []
-    hoje = date.today().isoformat()
-    fim = max(f"{ano}-12-31", hoje)
-    for d0, d1 in janelas_de_data(f"{ano}-01-01", fim):
+    for d0, d1 in janelas_de_data(ini_res.isoformat(), fim_res.isoformat()):
         resultados += consultar(
             "modulo-contratacoes/3_consultarResultadoItensContratacoes_PNCP_14133",
             {
@@ -320,10 +403,9 @@ def buscar_dados(uasg, numero, ano, cod_modalidade):
                 "dataResultadoPncpInicial": d0,
                 "dataResultadoPncpFinal": d1,
             },
-            obrigatorio=False,
+            obrigatorio=False, filtro=so_desta_compra,
         )
 
-    resultados = [r for r in resultados if r.get("idCompra") == id_compra]
     log(f"    {len(resultados)} resultado(s) da compra")
 
     return compra, itens, resultados
