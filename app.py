@@ -451,6 +451,10 @@ table.dados.densa th,table.dados.densa td{padding:7px 7px}
   </div>
 </div>
 
+<p style="max-width:1020px;margin:14px auto 0;text-align:center;
+          font-family:'IBM Plex Mono',monospace;font-size:11px;
+          letter-spacing:.08em;color:#9AA8B6">versão __VERSAO__</p>
+
 <script>
 const form = document.getElementById('form');
 const btn = document.getElementById('btn');
@@ -847,9 +851,24 @@ def erro_inesperado(e):
     ), 200
 
 
+@app.route("/versao")
+def versao():
+    """Diz qual código está no ar. Evita diagnosticar a versão errada."""
+    return jsonify(
+        versao=getattr(core, "VERSAO", "?"),
+        tempo_limite=getattr(core, "TEMPO_LIMITE", None),
+        timeout_requisicao=getattr(core, "TIMEOUT_REQ", None),
+        tamanho_pagina=getattr(core, "TAMANHO_PAGINA", None),
+        modulos={"pgc": pgc_core is not None,
+                 "orcamento": orcamento_core is not None},
+    )
+
+
 @app.route("/")
 def inicio():
-    return render_template_string(PAGINA)
+    return render_template_string(
+        PAGINA.replace("__VERSAO__", getattr(core, "VERSAO", "?"))
+    )
 
 
 @app.route("/gerar", methods=["POST"])

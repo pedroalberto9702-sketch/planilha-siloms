@@ -25,6 +25,7 @@
 
 import json
 import re
+import threading
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -67,6 +68,7 @@ DEBUG = False                   # True imprime as URLs chamadas (para diagnostic
 # CONSTANTES
 # =============================================================================
 
+VERSAO = "2026-10-01c"      # aparece no rodape do site e em /versao
 BASE = "https://dadosabertos.compras.gov.br"
 TAMANHO_PAGINA = 200
 JANELA_DIAS = 365
@@ -165,6 +167,41 @@ def _checar_prazo():
         )
 
 
+def _get_com_prazo(url, params):
+    """
+    Faz a requisicao numa thread separada e desiste se ela nao voltar dentro
+    do prazo. Uma leitura de socket bloqueada nao pode ser interrompida de
+    fora; o que da para fazer e parar de esperar por ela.
+    """
+    caixa = {}
+
+    def tentar():
+        try:
+            caixa["r"] = SESSAO.get(url, params=params,
+                                    timeout=TIMEOUT_REQ, stream=True)
+        except BaseException as e:          # noqa: BLE001 - repassada adiante
+            caixa["erro"] = e
+
+    limite = TIMEOUT_REQ + 10
+    if _inicio_consulta is not None:
+        restante = _limite_consulta - (time.monotonic() - _inicio_consulta)
+        if restante <= 0:
+            raise TempoEsgotado("a consulta passou do tempo")
+        limite = min(limite, restante)
+
+    t = threading.Thread(target=tentar, daemon=True)
+    t.start()
+    t.join(limite)
+
+    if t.is_alive():
+        raise TempoEsgotado(
+            f"o Compras.gov.br não respondeu em {int(limite)} segundos"
+        )
+    if "erro" in caixa:
+        raise caixa["erro"]
+    return caixa["r"]
+
+
 def consultar(endpoint, params, obrigatorio=True, filtro=None):
     """
     Consulta paginada.
@@ -179,13 +216,17 @@ def consultar(endpoint, params, obrigatorio=True, filtro=None):
         _checar_prazo()
         p = dict(params, pagina=pagina, tamanhoPagina=TAMANHO_PAGINA)
         try:
-            # stream=True e leitura em pedacos: o 'timeout' do requests nao
-            # limita a duracao TOTAL da requisicao, so o intervalo sem receber
-            # bytes. Uma resposta grande entregue devagar passava da trava de
-            # tempo e ia morrer no limite do servidor. Lendo em pedacos, o
-            # prazo e verificado durante o download, nao so entre paginas.
-            r = SESSAO.get(f"{BASE}/{endpoint}", params=p,
-                           timeout=TIMEOUT_REQ, stream=True)
+            # Duas travas, porque o problema tem duas formas:
+            #
+            #  a) o servidor aceita a conexao e nao devolve nem o cabecalho.
+            #     O processo fica preso dentro do proprio requests, antes de
+            #     qualquer byte, e o 'timeout' nem sempre o resgata. Por isso
+            #     a chamada vai para uma thread com prazo proprio: se ela nao
+            #     voltar, desistimos dela e seguimos.
+            #
+            #  b) o cabecalho vem, mas o corpo chega devagar. Dai a leitura em
+            #     pedacos abaixo, conferindo o prazo a cada pedaco.
+            r = _get_com_prazo(f"{BASE}/{endpoint}", p)
             if pagina == 1:
                 dbg(r.url)
 
