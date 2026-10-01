@@ -46,6 +46,11 @@ except ImportError:
 
 core.DEBUG = False
 
+try:
+    import pgc_core
+except ImportError:
+    pgc_core = None
+
 app = Flask(__name__)
 
 PASTA_SAIDA = os.path.join(tempfile.gettempdir(), "siloms_planilhas")
@@ -126,6 +131,22 @@ body{
 .tarja .sub{
   margin-top:6px;font-size:13px;color:#A9BDD0;
 }
+
+/* -------- abas -------- */
+.abas{
+  display:flex;border-bottom:1px solid var(--linha);background:#F7F9FB;
+}
+.aba{
+  flex:1;padding:14px 10px;border:none;background:none;cursor:pointer;
+  font-family:"IBM Plex Sans",sans-serif;font-size:13.5px;font-weight:600;
+  color:var(--tinta-fraca);border-bottom:3px solid transparent;
+  transition:color .15s,border-color .15s;width:auto;border-radius:0;
+}
+.aba:hover{color:var(--tinta);background:none}
+.aba.ativa{color:var(--azul);border-bottom-color:var(--azul);background:#fff}
+.aba:disabled{background:none;cursor:not-allowed;opacity:.5}
+.painel{display:none}
+.painel.ativo{display:block}
 
 /* -------- formulario -------- */
 form{padding:28px}
@@ -254,6 +275,12 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
     <div class="sub">Resultado de licitação extraído do Compras.gov.br</div>
   </div>
 
+  <div class="abas">
+    <button class="aba ativa" id="aba-lic" onclick="trocaAba('lic')">Resultado de licitação</button>
+    <button class="aba" id="aba-pgc" onclick="trocaAba('pgc')">Plano de contratações</button>
+  </div>
+
+  <div class="painel ativo" id="painel-lic">
   <form id="form" autocomplete="off">
     <div class="campo">
       <label for="uasg">UASG</label>
@@ -282,13 +309,29 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
 
     <button type="submit" id="btn">Gerar planilha</button>
   </form>
-
-  <div class="progresso" id="progresso">
-    <div class="etapa" data-etapa="1"><span class="bolinha"></span>Localizando a contratação</div>
-    <div class="etapa" data-etapa="2"><span class="bolinha"></span>Lendo os itens</div>
-    <div class="etapa" data-etapa="3"><span class="bolinha"></span>Buscando os vencedores</div>
-    <div class="etapa" data-etapa="4"><span class="bolinha"></span>Montando a planilha</div>
   </div>
+
+  <div class="painel" id="painel-pgc">
+    <form id="form-pgc" autocomplete="off">
+      <div class="campo">
+        <label for="uasg-pgc">UASG</label>
+        <input type="text" id="uasg-pgc" name="uasg" value="120641" inputmode="numeric" maxlength="6">
+        <div class="msg-erro" id="erro-uasg-pgc"></div>
+        <div class="dica">Código da unidade. BAPV = 120641.</div>
+      </div>
+
+      <div class="campo">
+        <label for="ano-pgc">Ano do plano</label>
+        <input type="text" id="ano-pgc" name="ano" value="2026" inputmode="numeric" maxlength="4">
+        <div class="msg-erro" id="erro-ano-pgc"></div>
+        <div class="dica">Ano do PCA. Uma linha por DFD, com os itens somados.</div>
+      </div>
+
+      <button type="submit" id="btn-pgc">Gerar planilha</button>
+    </form>
+  </div>
+
+  <div class="progresso" id="progresso"></div>
 
   <div class="saida" id="saida">
     <div class="carimbo">Planilha gerada</div>
@@ -308,11 +351,13 @@ button:focus-visible{outline:3px solid var(--tinta);outline-offset:2px}
 const form = document.getElementById('form');
 const btn = document.getElementById('btn');
 const progresso = document.getElementById('progresso');
+const form_pgc = document.getElementById('form-pgc');
+const btnPgc = document.getElementById('btn-pgc');
 const saida = document.getElementById('saida');
 const falha = document.getElementById('falha');
 
 function limpaErros(){
-  ['uasg','processo'].forEach(c=>{
+  ['uasg','processo','uasg-pgc','ano-pgc'].forEach(c=>{
     document.getElementById(c).classList.remove('erro');
     document.getElementById('erro-'+c).style.display='none';
   });
@@ -324,20 +369,59 @@ function marcaErro(campo, texto){
   i.focus();
 }
 
+const ETAPAS_LIC = ['Localizando a contratação','Lendo os itens',
+                    'Buscando os vencedores','Montando a planilha'];
+const ETAPAS_PGC = ['Identificando o órgão','Lendo o plano de contratações',
+                    'Agrupando por DFD'];
+
 let timers = [];
-function animaEtapas(){
-  document.querySelectorAll('.etapa').forEach(e=>e.className='etapa');
+function animaEtapas(rotulos){
+  progresso.innerHTML = rotulos.map((t,i)=>
+    `<div class="etapa" data-etapa="${i+1}"><span class="bolinha"></span>${t}</div>`
+  ).join('');
   progresso.classList.add('ativa');
-  const marcos = [0, 1200, 4000, 8000];
-  timers = marcos.map((ms,i)=>setTimeout(()=>{
+  const marcos = [0, 1500, 5000, 9000];
+  timers = rotulos.map((_,i)=>setTimeout(()=>{
     const atual = document.querySelector(`[data-etapa="${i+1}"]`);
-    if(i>0) document.querySelector(`[data-etapa="${i}"]`).className='etapa feita';
+    const ant = document.querySelector(`[data-etapa="${i}"]`);
+    if(ant) ant.className='etapa feita';
     if(atual) atual.className='etapa rodando';
-  }, ms));
+  }, marcos[i] !== undefined ? marcos[i] : 9000));
 }
 function paraEtapas(){
   timers.forEach(clearTimeout); timers=[];
   progresso.classList.remove('ativa');
+}
+
+function trocaAba(qual){
+  const outro = qual === 'lic' ? 'pgc' : 'lic';
+  document.getElementById('aba-'+qual).classList.add('ativa');
+  document.getElementById('aba-'+outro).classList.remove('ativa');
+  document.getElementById('painel-'+qual).classList.add('ativo');
+  document.getElementById('painel-'+outro).classList.remove('ativo');
+  saida.classList.remove('ativa');
+  falha.classList.remove('ativa');
+  paraEtapas();
+}
+
+function mostraFalha(titulo, texto, extra){
+  document.getElementById('falha-titulo').textContent = titulo;
+  document.getElementById('falha-texto').textContent = texto;
+  document.getElementById('falha-extra').innerHTML = extra || '';
+  falha.classList.add('ativa');
+}
+
+function trataHttp(status){
+  if(status === 502 || status === 503){
+    mostraFalha('O servidor está acordando',
+      'Este site hiberna quando fica parado. Espere cerca de um minuto e '
+      + 'clique em Gerar planilha de novo.');
+  }else if(status === 504){
+    mostraFalha('A consulta demorou demais',
+      'O Compras.gov.br está lento agora. Tente novamente em alguns minutos.');
+  }else{
+    mostraFalha('O servidor não respondeu', 'Tente de novo em alguns instantes.');
+  }
 }
 
 form.addEventListener('submit', async (ev)=>{
@@ -353,7 +437,7 @@ form.addEventListener('submit', async (ev)=>{
 
   btn.disabled = true;
   btn.textContent = 'Consultando o Compras.gov.br...';
-  animaEtapas();
+  animaEtapas(ETAPAS_LIC);
 
   try{
     const r = await fetch('/gerar', {
@@ -362,37 +446,14 @@ form.addEventListener('submit', async (ev)=>{
       body: JSON.stringify({uasg, processo, tipo: document.getElementById('tipo').value})
     });
 
-    if(!r.ok){
-      paraEtapas();
-      let titulo = 'O servidor não respondeu';
-      let texto  = 'Tente de novo em alguns instantes.';
-      if(r.status === 502 || r.status === 503){
-        titulo = 'O servidor está acordando';
-        texto  = 'Este site hiberna quando fica parado. Espere cerca de um '
-               + 'minuto e clique em Gerar planilha de novo.';
-      }else if(r.status === 504){
-        titulo = 'A consulta demorou demais';
-        texto  = 'O Compras.gov.br está lento agora. Tente novamente em '
-               + 'alguns minutos.';
-      }
-      document.getElementById('falha-titulo').textContent = titulo;
-      document.getElementById('falha-texto').textContent = texto;
-      document.getElementById('falha-extra').innerHTML = '';
-      falha.classList.add('ativa');
-      return;
-    }
+    if(!r.ok){ paraEtapas(); trataHttp(r.status); return; }
 
     const d = await r.json();
     paraEtapas();
 
     if(!d.ok){
       if(d.campo){ marcaErro(d.campo, d.mensagem); }
-      else{
-        document.getElementById('falha-titulo').textContent = d.titulo || 'Não deu para gerar';
-        document.getElementById('falha-texto').textContent = d.mensagem;
-        document.getElementById('falha-extra').innerHTML = d.extra || '';
-        falha.classList.add('ativa');
-      }
+      else{ mostraFalha(d.titulo || 'Não deu para gerar', d.mensagem, d.extra); }
       return;
     }
 
@@ -413,15 +474,67 @@ form.addEventListener('submit', async (ev)=>{
 
   }catch(err){
     paraEtapas();
-    document.getElementById('falha-titulo').textContent = 'Não consegui completar a consulta';
-    document.getElementById('falha-texto').textContent =
+    mostraFalha('Não consegui completar a consulta',
       'A conexão caiu no meio do caminho. Verifique sua internet e clique '
-      + 'em Gerar planilha de novo.';
-    document.getElementById('falha-extra').innerHTML = '';
-    falha.classList.add('ativa');
+      + 'em Gerar planilha de novo.');
   }finally{
     btn.disabled = false;
     btn.textContent = 'Gerar planilha';
+  }
+});
+form_pgc.addEventListener('submit', async (ev)=>{
+  ev.preventDefault();
+  limpaErros();
+  saida.classList.remove('ativa');
+  falha.classList.remove('ativa');
+
+  const uasg = document.getElementById('uasg-pgc').value.trim();
+  const ano  = document.getElementById('ano-pgc').value.trim();
+  if(!uasg){ marcaErro('uasg-pgc','Informe a UASG.'); return; }
+  if(!/^\d{4}$/.test(ano)){ marcaErro('ano-pgc','Informe o ano com 4 dígitos.'); return; }
+
+  btnPgc.disabled = true;
+  btnPgc.textContent = 'Consultando o Compras.gov.br...';
+  animaEtapas(ETAPAS_PGC);
+
+  try{
+    const r = await fetch('/gerar-pgc', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({uasg, ano})
+    });
+    if(!r.ok){ paraEtapas(); trataHttp(r.status); return; }
+
+    const d = await r.json();
+    paraEtapas();
+
+    if(!d.ok){
+      if(d.campo){ marcaErro(d.campo, d.mensagem); }
+      else{ mostraFalha(d.titulo || 'Não deu para gerar', d.mensagem, d.extra); }
+      return;
+    }
+
+    const f = (n)=> n.toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById('dados').innerHTML = `
+      <div class="linha-dado"><span class="rot">Unidade</span><span class="val">${d.nome_uasg||d.uasg}</span></div>
+      <div class="linha-dado"><span class="rot">Plano</span><span class="val">PCA ${d.ano}</span></div>
+      <div class="linha-dado"><span class="rot">DFDs</span><span class="val">${d.dfds}</span></div>
+      <div class="linha-dado"><span class="rot">Itens somados</span><span class="val">${d.itens}</span></div>
+      <div class="linha-dado"><span class="rot">Valor planejado</span><span class="val destaque">R$ ${f(d.valor)}</span></div>`;
+    document.getElementById('aviso-container').innerHTML =
+      d.aviso ? `<div class="aviso">${d.aviso}</div>` : '';
+    document.getElementById('baixar').href = '/baixar/' + d.token;
+    saida.classList.add('ativa');
+    saida.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  }catch(err){
+    paraEtapas();
+    mostraFalha('Não consegui completar a consulta',
+      'A conexão caiu no meio do caminho. Verifique sua internet e clique '
+      + 'em Gerar planilha de novo.');
+  }finally{
+    btnPgc.disabled = false;
+    btnPgc.textContent = 'Gerar planilha';
   }
 });
 </script>
@@ -560,6 +673,93 @@ def gerar():
         objeto=objeto,
         itens=n_itens, com_vencedor=com_venc, sem_vencedor=sem_venc,
         valor=total, aviso=aviso,
+    )
+
+
+@app.route("/gerar-pgc", methods=["POST"])
+def gerar_pgc():
+    limpar_antigos()
+    if pgc_core is None:
+        return jsonify(
+            ok=False, titulo="Módulo indisponível",
+            mensagem="O arquivo pgc_core.py não está na pasta do servidor.",
+        )
+
+    dados = request.get_json(silent=True) or {}
+
+    uasg = re.sub(r"\D", "", str(dados.get("uasg", "")))
+    if not (5 <= len(uasg) <= 6):
+        return jsonify(ok=False, campo="uasg-pgc",
+                       mensagem="A UASG tem 5 ou 6 dígitos. Exemplo: 120641.")
+
+    ano_txt = re.sub(r"\D", "", str(dados.get("ano", "")))
+    if len(ano_txt) != 4:
+        return jsonify(ok=False, campo="ano-pgc",
+                       mensagem="Informe o ano com 4 dígitos. Exemplo: 2026.")
+    ano = int(ano_txt)
+
+    try:
+        cnpj, nome_uasg = pgc_core.obter_cnpj_orgao(uasg)
+    except Exception as e:
+        return jsonify(
+            ok=False, titulo="Não consegui identificar o órgão",
+            mensagem=f"A consulta da UASG falhou: {type(e).__name__}. "
+                     "Tente novamente em alguns instantes.",
+        )
+
+    if not cnpj:
+        return jsonify(
+            ok=False, campo="uasg-pgc",
+            mensagem=f"Não encontrei a UASG {uasg} no Compras.gov.br.",
+        )
+
+    try:
+        registros = pgc_core.buscar_pgc(uasg, ano, cnpj)
+    except Exception as e:
+        return jsonify(
+            ok=False, titulo="Não consegui consultar o plano",
+            mensagem=f"A consulta falhou: {type(e).__name__}. "
+                     "Verifique sua conexão e tente de novo.",
+        )
+
+    if not registros:
+        return jsonify(
+            ok=False, titulo="Nenhum item no plano",
+            mensagem=f"A UASG {uasg} não tem itens de PCA {ano} publicados.",
+            extra=(
+                "<ul>"
+                "<li>Confira se o ano está certo.</li>"
+                "<li>O PGC depende da divulgação do PCA no PNCP e tem "
+                "defasagem de alguns dias — planos recém-publicados podem "
+                "ainda não aparecer.</li>"
+                "</ul>"
+            ),
+        )
+
+    df = pgc_core.montar_por_dfd(registros)
+    if df.empty:
+        return jsonify(
+            ok=False, titulo="Não consegui agrupar por DFD",
+            mensagem="Os itens vieram sem identificação de DFD.",
+        )
+
+    token = uuid.uuid4().hex
+    nome = f"pgc_{uasg}_{ano}.xlsx"
+    caminho = os.path.join(PASTA_SAIDA, f"{token}_{nome}")
+    pgc_core.gravar_xlsx(df, caminho)
+    ARQUIVOS[token] = (caminho, nome)
+
+    total = float(df["VALOR TOTAL"].sum())
+    n_itens = int(df["QTD ITENS"].sum())
+
+    aviso = ""
+    if total == 0:
+        aviso = ("Todos os DFDs vieram com valor zerado. Confira no PGC se "
+                 "os itens já têm estimativa de preço lançada.")
+
+    return jsonify(
+        ok=True, token=token, uasg=uasg, nome_uasg=nome_uasg or "",
+        ano=ano, dfds=int(len(df)), itens=n_itens, valor=total, aviso=aviso,
     )
 
 
