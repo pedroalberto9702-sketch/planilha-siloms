@@ -30,7 +30,7 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 import comprasnet as api
 import planilha as pl
 
-VERSAO = "2.0.0"
+VERSAO = "2.1.0"
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -283,7 +283,7 @@ const $ = s => document.querySelector(s);
 const palco = $('#palco'), elResumo = $('#resumo'), elFiltros = $('#filtros');
 const campoUasg = $('#uasg'), campoAno = $('#ano'), btn = $('#btn');
 
-let certames = [], filtro = 'Todos';
+let certames = [], faltaram = [], filtro = 'Todos';
 
 const esc = t => String(t ?? '').replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -333,7 +333,9 @@ function desenhar(){
   elResumo.hidden = false;
   elResumo.innerHTML = `<span><b>${certames.length}</b> certames na unidade
       ${esc(campoUasg.value)} em ${esc(campoAno.value)}</span>
-    <span>atualizado às ${atual}</span>`;
+    <span>atualizado às ${atual}</span>`
+    + (faltaram.length ? `<span style="color:var(--alerta)">
+        ${esc(faltaram.join(', '))} não respondeu a tempo</span>` : '');
 
   const contas = {};
   certames.forEach(c => contas[c.fase] = (contas[c.fase]||0)+1);
@@ -399,6 +401,7 @@ async function atualizar(forcar){
       return;
     }
     certames = d.certames || [];
+    faltaram = d.faltaram || [];
     if(!certames.length){
       palco.innerHTML = `<div class="vazio">
         <h2>Nenhum certame encontrado</h2>
@@ -546,11 +549,12 @@ def rota_certames():
         with _TRAVA:
             guardado = _CACHE.get(chave)
         if guardado and (time.time() - guardado["em"]) < VALIDADE:
-            return jsonify(ok=True, certames=guardado["certames"], do_cache=True)
+            return jsonify(ok=True, certames=guardado["certames"],
+                           faltaram=guardado.get("faltaram") or [], do_cache=True)
 
     api.iniciar_prazo()
     try:
-        certames = api.listar_certames(uasg, ano)
+        certames, faltaram = api.listar_certames(uasg, ano)
     except api.TempoEsgotado as e:
         return jsonify(
             ok=False, titulo="A consulta demorou demais",
@@ -560,12 +564,14 @@ def rota_certames():
     finally:
         api.limpar_prazo()
 
+    # resultado parcial vale mais que erro: guardamos e avisamos o que faltou
     with _TRAVA:
-        _CACHE[chave] = {"certames": certames, "em": time.time()}
+        _CACHE[chave] = {"certames": certames, "faltaram": faltaram,
+                         "em": time.time()}
         for k in [k for k in _CACHE if k != chave][:-4]:
             _CACHE.pop(k, None)
 
-    return jsonify(ok=True, certames=certames, do_cache=False)
+    return jsonify(ok=True, certames=certames, faltaram=faltaram, do_cache=False)
 
 
 @app.route("/api/planilha", methods=["POST"])

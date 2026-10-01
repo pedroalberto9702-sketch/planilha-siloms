@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-VERSAO = "2.0.0"
+VERSAO = "2.1.0"
 
 BASE = "https://dadosabertos.compras.gov.br"
 
@@ -310,10 +310,10 @@ def listar_certames(uasg, ano, modalidades=(5, 6, 7, 3, 12)):
     hoje = date.today()
     fim = min(date(ano, 12, 31), hoje) if ano == hoje.year else date(ano, 12, 31)
 
-    achados = {}
-    for mod in modalidades:
-        _checar_prazo()
-        lote = consultar(
+    # As modalidades vao juntas. Em fila, cinco chamadas lentas somavam mais
+    # que o prazo inteiro da consulta -- era o gargalo real da listagem.
+    def uma(mod):
+        return consultar(
             "modulo-contratacoes/1_consultarContratacoes_PNCP_14133",
             {
                 "unidadeOrgaoCodigoUnidade": str(uasg),
@@ -322,10 +322,34 @@ def listar_certames(uasg, ano, modalidades=(5, 6, 7, 3, 12)):
                 "codigoModalidade": mod,
             },
         )
-        for c in lote:
-            if c.get("contratacaoExcluida"):
+
+    achados, faltaram = {}, []
+    executor = ThreadPoolExecutor(max_workers=min(len(modalidades), PARALELO))
+    try:
+        futuros = {executor.submit(uma, m): m for m in modalidades}
+        for f in as_completed(futuros):
+            mod = futuros[f]
+            try:
+                lote = f.result()
+            except TempoEsgotado:
+                # uma modalidade lenta nao derruba as outras: seguimos com o
+                # que chegou e avisamos o que faltou
+                faltaram.append(MODALIDADES.get(mod, str(mod)))
                 continue
-            achados[c.get("idCompra")] = c
+            except Exception:
+                faltaram.append(MODALIDADES.get(mod, str(mod)))
+                continue
+            for c in lote:
+                if c.get("contratacaoExcluida"):
+                    continue
+                achados[c.get("idCompra")] = c
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if faltaram and not achados:
+        raise TempoEsgotado(
+            "nenhuma modalidade respondeu a tempo"
+        )
 
     saida = []
     for c in achados.values():
@@ -358,7 +382,7 @@ def listar_certames(uasg, ano, modalidades=(5, 6, 7, 3, 12)):
     for c in saida:
         for campo in ("abertura", "encerramento", "publicacao"):
             c[campo] = c[campo].isoformat() if c[campo] else ""
-    return saida
+    return saida, faltaram
 
 
 def resultado_certame(uasg, id_compra, publicacao=None, janela=45):
