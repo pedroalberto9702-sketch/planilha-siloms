@@ -23,6 +23,7 @@
 =============================================================================
 """
 
+import json
 import re
 import sys
 import time
@@ -67,10 +68,11 @@ DEBUG = False                   # True imprime as URLs chamadas (para diagnostic
 # =============================================================================
 
 BASE = "https://dadosabertos.compras.gov.br"
-TAMANHO_PAGINA = 500
+TAMANHO_PAGINA = 200
 JANELA_DIAS = 365
 PAUSA = 0.15                # pausa entre paginas
-TIMEOUT_REQ = 45            # limite de cada requisicao
+TIMEOUT_REQ = 30            # intervalo maximo sem receber bytes
+LIMITE_RESPOSTA = 40_000_000   # teto de uma resposta, em bytes
 TEMPO_LIMITE = 180          # limite da consulta inteira (o servidor corta em 300)
 JANELA_ITENS = 45           # dias antes/depois da publicacao para buscar itens
 
@@ -177,24 +179,47 @@ def consultar(endpoint, params, obrigatorio=True, filtro=None):
         _checar_prazo()
         p = dict(params, pagina=pagina, tamanhoPagina=TAMANHO_PAGINA)
         try:
-            r = SESSAO.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT_REQ)
+            # stream=True e leitura em pedacos: o 'timeout' do requests nao
+            # limita a duracao TOTAL da requisicao, so o intervalo sem receber
+            # bytes. Uma resposta grande entregue devagar passava da trava de
+            # tempo e ia morrer no limite do servidor. Lendo em pedacos, o
+            # prazo e verificado durante o download, nao so entre paginas.
+            r = SESSAO.get(f"{BASE}/{endpoint}", params=p,
+                           timeout=TIMEOUT_REQ, stream=True)
+            if pagina == 1:
+                dbg(r.url)
+
+            if r.status_code != 200:
+                msg = f"HTTP {r.status_code} em {endpoint}"
+                r.close()
+                if obrigatorio:
+                    raise RuntimeError(msg)
+                log(f"    !! {msg}")
+                return registros
+
+            corpo = bytearray()
+            for pedaco in r.iter_content(64 * 1024):
+                _checar_prazo()
+                corpo.extend(pedaco)
+                if len(corpo) > LIMITE_RESPOSTA:
+                    r.close()
+                    raise TempoEsgotado(
+                        "a resposta do Compras.gov.br veio grande demais"
+                    )
+            r.close()
         except requests.RequestException as e:
             if obrigatorio:
                 raise
             log(f"    !! falha de rede em {endpoint}: {e}")
             return registros
 
-        if pagina == 1:
-            dbg(r.url)
-
-        if r.status_code != 200:
-            msg = f"HTTP {r.status_code} em {endpoint}\n       {(r.text or '')[:400]}"
+        try:
+            dados = json.loads(corpo.decode("utf-8", "replace")) if corpo else {}
+        except ValueError:
             if obrigatorio:
-                raise RuntimeError(msg)
-            log(f"    !! {msg}")
+                raise RuntimeError(f"resposta ilegível de {endpoint}")
+            log(f"    !! resposta ilegível de {endpoint}")
             return registros
-
-        dados = r.json()
         lote = dados.get("resultado") or []
         registros.extend(lote if filtro is None else [x for x in lote if filtro(x)])
 
